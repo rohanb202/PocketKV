@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"sync"
 	"time"
 	"container/heap"
@@ -21,6 +22,7 @@ type Cache struct {
 	data map[string]Item
 	mu   sync.RWMutex
 	expiryHeap *ExpiryHeap
+	expiryMap map[string]*ExpiryItem
 }
 
 
@@ -42,14 +44,19 @@ func (h ExpiryHeap) Less(i,j int) bool {
 func (h ExpiryHeap) Swap(i,j int){
 
 	h[i],h[j] = h[j],h[i]
+	h[i].index = i
+	h[j].index = j
 
 }
 
 
 func (h *ExpiryHeap) Push(x any){
 
-	*h = append(*h,x.(*ExpiryItem))
+	item := x.(*ExpiryItem)
 
+	item.index=len(*h)
+
+	*h=append(*h,item)
 }
 
 
@@ -80,35 +87,47 @@ func NewCache() *Cache {
 	return &Cache{
 		data: make(map[string]Item),
 		expiryHeap: &h,
+		expiryMap: make(map[string]*ExpiryItem),
 	}
 }
 func (c *Cache) Set(key, value string, ttl time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	expiry := time.Now().Add(ttl)
-	c.data[key] = Item{Value: value, Expiry: expiry}
-	heap.Push(c.expiryHeap, &ExpiryItem{key: key, expiry: expiry})
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    expiry := time.Now().Add(ttl)
+    c.data[key] = Item{Value: value, Expiry: expiry}
+
+    if existing, ok := c.expiryMap[key]; ok {
+        existing.expiry = expiry
+        heap.Fix(c.expiryHeap, existing.index)
+    } else {
+        expiryItem := &ExpiryItem{key: key, expiry: expiry}
+        heap.Push(c.expiryHeap, expiryItem)
+        c.expiryMap[key] = expiryItem
+    }
 }
 
 func (c *Cache) Get(key string) (string, bool) {
-	c.mu.RLock()
-	
-	value, ok := c.data[key]
-
-	c.mu.RUnlock()
-	if !ok {
-		return "", false
-	}
-	if value.Expiry.Before(time.Now()) {
-		delete(c.data, key)
-		return "", false
-	}
-	return value.Value, ok
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    value, ok := c.data[key]
+    if !ok {
+        return "", false
+    }
+    if value.Expiry.Before(time.Now()) {
+        delete(c.data, key)
+        return "", false
+    }
+    return value.Value, true
 }
+
 func (c *Cache) Delete(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.data, key)
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    delete(c.data, key)
+    if item, ok := c.expiryMap[key]; ok {
+        heap.Remove(c.expiryHeap, item.index)
+        delete(c.expiryMap, key)
+    }
 }
 
 func (c *Cache) Cleanup() {
@@ -128,11 +147,30 @@ func (c *Cache) Cleanup() {
 	}
 }
 
-func (c *Cache) StartCleanup(interval time.Duration) {
-	go func() {
+func (c *Cache) StartCleanup(
+	ctx context.Context,
+	interval time.Duration,
+){
+
+	go func(){
+
+		ticker:=time.NewTicker(interval)
+
+		defer ticker.Stop()
+
+
 		for {
-			time.Sleep(interval)
-			c.Cleanup()
+
+			select {
+
+			case <-ticker.C:
+				c.Cleanup()
+
+
+			case <-ctx.Done():
+				return
+			}
 		}
+
 	}()
 }

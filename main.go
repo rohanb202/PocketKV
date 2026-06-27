@@ -1,164 +1,181 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"sync"
+	"net/http"
 	"time"
-	"container/heap"
+	"context"
+	"dist-cache/cache"
 )
 
-type Item struct {
-	Value string
-	Expiry time.Time
-}
 
-type ExpiryItem struct {
-	key string
-	expiry time.Time
-	index int
-}
-
-type Cache struct {
-	data map[string]Item
-	mu   sync.RWMutex
-	expiryHeap *ExpiryHeap
-}
+var c *cache.Cache
 
 
-type ExpiryHeap []*ExpiryItem
+func getValue(
+	w http.ResponseWriter,
+	r *http.Request,
+){
+
+	key := r.URL.Query().Get("key")
 
 
-func (h ExpiryHeap) Len() int {
-	return len(h)
-}
+	value, ok := c.Get(key)
 
 
-func (h ExpiryHeap) Less(i,j int) bool {
-
-	return h[i].expiry.Before(h[j].expiry)
-
-}
-
-
-func (h ExpiryHeap) Swap(i,j int){
-
-	h[i],h[j] = h[j],h[i]
-
-}
-
-
-func (h *ExpiryHeap) Push(x any){
-
-	*h = append(*h,x.(*ExpiryItem))
-
-}
-
-
-func (h *ExpiryHeap) Pop() any {
-
-	old := *h
-
-	n := len(old)
-
-	item := old[n-1]
-
-	*h = old[:n-1]
-
-	return item
-}
-
-
-
-
-
-
-
-func NewCache() *Cache {
-
-	h:= make(ExpiryHeap, 0)
-	heap.Init(&h)
-
-	return &Cache{
-		data: make(map[string]Item),
-		expiryHeap: &h,
-	}
-}
-func (c *Cache) Set(key, value string, expiry time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.data[key] = Item{Value: value, Expiry: expiry}
-	heap.Push(c.expiryHeap, &ExpiryItem{key: key, expiry: expiry})
-}
-
-func (c *Cache) Get(key string) (string, bool) {
-	c.mu.RLock()
-	
-	value, ok := c.data[key]
-
-	c.mu.RUnlock()
 	if !ok {
-		return "", false
+
+		http.Error(
+			w,
+			"not found",
+			404,
+		)
+
+		return
 	}
-	if value.Expiry.Before(time.Now()) {
-		delete(c.data, key)
-		return "", false
-	}
-	return value.Value, ok
+
+
+	json.NewEncoder(w).Encode(
+		map[string]string{
+			"value":value,
+		},
+	)
+
 }
-func (c *Cache) Delete(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.data, key)
+func deleteValue(
+	w http.ResponseWriter,
+	r *http.Request,
+){
+
+	key := r.URL.Query().Get("key")
+
+
+	c.Delete(key)
+
+
+	w.WriteHeader(
+		http.StatusNoContent,
+	)
 }
 
-func (c *Cache) Cleanup() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := time.Now()
-	for c.expiryHeap.Len() > 0 {
-		item := (*c.expiryHeap)[0]
-		if item.expiry.After(now) {
-			break
-		}
-		current, exists := c.data[item.key]
-		if exists && current.Expiry.Equal(item.expiry) {
-			delete(c.data, item.key)
-		}
-		heap.Pop(c.expiryHeap)
-	}
+
+type SetRequest struct {
+
+	Key string `json:"key"`
+
+	Value string `json:"value"`
+
+	TTL int `json:"ttl"`
 }
 
-func (c *Cache) StartCleanup(interval time.Duration) {
-	go func() {
-		for {
-			time.Sleep(interval)
-			c.Cleanup()
-		}
-	}()
+
+
+func setValue(
+	w http.ResponseWriter,
+	r *http.Request,
+){
+
+	var req SetRequest
+
+
+	err := json.NewDecoder(
+		r.Body,
+	).Decode(&req)
+
+
+	if err != nil {
+
+		http.Error(
+			w,
+			err.Error(),
+			400,
+		)
+
+		return
+	}
+
+
+
+	c.Set(
+		req.Key,
+		req.Value,
+		time.Duration(req.TTL)*time.Second,
+	)
+
+
+	w.WriteHeader(
+		http.StatusCreated,
+	)
+
 }
+
+
+func cacheHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+){
+
+	switch r.Method {
+
+
+		case http.MethodPost:
+
+			setValue(w,r)
+
+
+		case http.MethodGet:
+
+			getValue(w,r)
+
+
+		case http.MethodDelete:
+
+			deleteValue(w,r)
+
+
+		default:
+
+			http.Error(
+				w,
+				"method not allowed",
+				http.StatusMethodNotAllowed,
+			)
+	}
+
+}
+
+
+
 
 func main(){
-    cache := NewCache()
-	cache.StartCleanup(1 * time.Minute) // Start cleanup every minute
 
-	cache.Set(
-		"name",
-		"rohan",
-		time.Now().Add(5*time.Minute),
-    )
+	c = cache.NewCache()
 
-	value, exists := cache.Get("name")
+	ctx,cancel := context.WithCancel(
+		context.Background(),
+	)
+
+	defer cancel()
 
 
-	if exists {
-		fmt.Println("Value:", value)
-	}
+	c.StartCleanup(
+		ctx,
+		time.Minute,
+	)
+
+	http.HandleFunc(
+		"/cache",
+		cacheHandler,
+	)
 
 
-	cache.Delete("name")
+	fmt.Println("server running on :8080")
 
 
-	_, exists = cache.Get("name")
+	http.ListenAndServe(
+		":8080",
+		nil,
+	)
 
-	fmt.Println("Exists after delete:", exists)
 }
