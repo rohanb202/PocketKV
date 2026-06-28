@@ -1,0 +1,205 @@
+package node
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"time"
+	"fmt"
+	"dist-cache/cache"
+)
+
+
+type Node struct {
+	ID string
+	Address string
+	Cache *cache.Cache
+}
+
+
+type SetRequest struct {
+	Key string `json:"key"`
+	Value string `json:"value"`
+	TTL int `json:"ttl"`
+}
+
+
+func NewNode(
+	ctx context.Context,
+	id string,
+	address string,
+) *Node {
+
+	c := cache.NewCache()
+
+	c.StartCleanup(
+		ctx,
+		1*time.Minute,
+	)
+
+
+	return &Node{
+		ID:id,
+		Address:address,
+		Cache:c,
+	}
+}
+
+
+
+func (n *Node) handleCache(
+	w http.ResponseWriter,
+	r *http.Request,
+){
+
+	switch r.Method {
+
+
+	case http.MethodGet:
+
+		n.get(
+			w,
+			r,
+		)
+
+
+	case http.MethodPost:
+
+		n.set(
+			w,
+			r,
+		)
+
+
+	case http.MethodDelete:
+
+		n.delete(
+			w,
+			r,
+		)
+
+
+	default:
+
+		http.Error(
+			w,
+			"method not allowed",
+			http.StatusMethodNotAllowed,
+		)
+	}
+
+}
+
+
+func (n *Node) get(
+	w http.ResponseWriter,
+	r *http.Request,
+){
+
+	key := r.URL.Query().Get("key")
+
+
+	value, ok := n.Cache.Get(key)
+
+
+	if !ok {
+
+		http.NotFound(
+			w,
+			r,
+		)
+
+		return
+	}
+
+
+	json.NewEncoder(w).Encode(
+		map[string]string{
+			"value":value,
+		},
+	)
+}
+
+
+
+func (n *Node) set(
+	w http.ResponseWriter,
+	r *http.Request,
+){
+
+	var req SetRequest
+
+
+	err := json.NewDecoder(
+		r.Body,
+	).Decode(&req)
+
+
+	if err != nil {
+
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusBadRequest,
+		)
+
+		return
+	}
+
+
+	n.Cache.Set(
+		req.Key,
+		req.Value,
+		time.Duration(req.TTL)*time.Second,
+	)
+
+
+	w.WriteHeader(
+		http.StatusCreated,
+	)
+}
+
+
+func (n *Node) delete(
+	w http.ResponseWriter,
+	r *http.Request,
+){
+
+	key := r.URL.Query().Get("key")
+
+
+	n.Cache.Delete(key)
+
+
+	w.WriteHeader(
+		http.StatusNoContent,
+	)
+}
+
+func (n *Node) Start() {
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc(
+		"/cache",
+		n.handleCache,
+	)
+
+
+	go func() {
+
+
+		fmt.Println("node running on :", n.Address)
+
+		err := http.ListenAndServe(
+			n.Address,
+			mux,
+		)
+
+		if err != nil {
+			panic(err)
+		}
+
+	}()
+
+}
