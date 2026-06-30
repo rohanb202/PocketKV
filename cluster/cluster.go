@@ -3,48 +3,41 @@ package cluster
 
 import (
 	"dist-cache/node"
-	"hash/fnv"
+
 )
 
 
 type Cluster struct {
 
-	nodes []*node.Node
+	ring *HashRing
 
 }
 
 func NewCluster() *Cluster {
 
 	return &Cluster{
-		nodes: make([]*node.Node, 0),
+
+		ring:&HashRing{
+			nodes:make([]RingNode,0),
+			virtualNodes:100,
+		},
 	}
 }
-
 
 func (c *Cluster) AddNode(
 	n *node.Node,
 ){
 
-	c.nodes = append(
-		c.nodes,
-		n,
-	)
+	c.ring.AddNode(n)
 
 }
 
-func (c *Cluster) GetNode(
+func (c *Cluster) GetNodes(
 	key string,
-) *node.Node {
+	count int,
+) []*node.Node {
 
-	if len(c.nodes) == 0 {
-		return nil
-	}
 
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	hashValue := h.Sum32()
+	return c.ring.GetNodes(key, count)
 
-	index := int(hashValue) % len(c.nodes)
-
-	return c.nodes[index]
 }

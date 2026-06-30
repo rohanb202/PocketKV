@@ -9,19 +9,20 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"time"
 )
 
 
 var cl *cluster.Cluster
 
 func sendToNode(
-	node *node.Node,
+	n *node.Node,
 	method string,
 	body []byte,
 	path string,
-) (*http.Response,error){
+) (*http.Response, error) {
 
-	url := "http://" + node.Address + path
+	url := "http://" + n.Address + path
 
 
 	req, err := http.NewRequest(
@@ -30,9 +31,8 @@ func sendToNode(
 		bytes.NewBuffer(body),
 	)
 
-
 	if err != nil {
-		return nil,err
+		return nil, err
 	}
 
 
@@ -42,89 +42,130 @@ func sendToNode(
 	)
 
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+	}
 
 
 	return client.Do(req)
 }
 
-
 func getValue(
 	w http.ResponseWriter,
 	r *http.Request,
-){
+) {
 
 	key := r.URL.Query().Get("key")
 
 
-	n := cl.GetNode(key)
-
-
-	resp, err := sendToNode(
-		n,
-		http.MethodGet,
-		nil,
-		"/cache?key="+key,
+	nodes := cl.GetNodes(
+		key,
+		2,
 	)
 
 
-	if err != nil {
-		http.Error(
-			w,
-			err.Error(),
-			500,
+	for _, n := range nodes {
+
+		resp, err := sendToNode(
+			n,
+			http.MethodGet,
+			nil,
+			"/cache?key="+key,
 		)
-		return
+
+
+		if err != nil {
+			continue
+		}
+
+
+		// close immediately after handling this response
+		if resp.StatusCode == http.StatusOK {
+
+			w.WriteHeader(
+				http.StatusOK,
+			)
+
+			_, _ = io.Copy(
+				w,
+				resp.Body,
+			)
+
+			resp.Body.Close()
+
+			return
+		}
+
+
+		resp.Body.Close()
 	}
 
 
-	defer resp.Body.Close()
-
-
-	w.WriteHeader(resp.StatusCode)
-
-
-	_,_ = io.Copy(
+	http.Error(
 		w,
-		resp.Body,
+		"key not found",
+		http.StatusNotFound,
 	)
 }
 
 func deleteValue(
 	w http.ResponseWriter,
 	r *http.Request,
-){
+) {
 
 	key := r.URL.Query().Get("key")
 
 
-	n := cl.GetNode(key)
-
-
-	resp, err := sendToNode(
-		n,
-		http.MethodDelete,
-		nil,
-		"/cache?key="+key,
+	nodes := cl.GetNodes(
+		key,
+		2,
 	)
 
 
-	if err != nil {
+	success := 0
+
+
+	for _, n := range nodes {
+
+
+		resp, err := sendToNode(
+			n,
+			http.MethodDelete,
+			nil,
+			"/cache?key="+key,
+		)
+
+
+		if err != nil {
+			continue
+		}
+
+
+		resp.Body.Close()
+
+
+		if resp.StatusCode == http.StatusNoContent {
+			success++
+		}
+	}
+
+
+	if success == 0 {
+
 		http.Error(
 			w,
-			err.Error(),
-			500,
+			"delete failed",
+			http.StatusServiceUnavailable,
 		)
+
 		return
 	}
 
 
-	defer resp.Body.Close()
-
-
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(
+		http.StatusNoContent,
+	)
 }
-
 type SetRequest struct {
 
 	Key string `json:"key"`
@@ -139,54 +180,112 @@ type SetRequest struct {
 func setValue(
 	w http.ResponseWriter,
 	r *http.Request,
-){
+) {
 
 	body, err := io.ReadAll(r.Body)
-
-
+	
 	if err != nil {
-		http.Error(w,err.Error(),400)
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusBadRequest,
+		)
 		return
 	}
 
 
 	var req SetRequest
 
-
-	json.Unmarshal(
+	err = json.Unmarshal(
 		body,
 		&req,
 	)
-
-
-	n := cl.GetNode(req.Key)
-
-
-
-	resp, err := sendToNode(
-		n,
-		http.MethodPost,
-		body,
-		"/cache",
-	)
-
 
 	if err != nil {
 		http.Error(
 			w,
 			err.Error(),
-			500,
+			http.StatusBadRequest,
 		)
 		return
 	}
 
+	fmt.Println(
+		"set request for key:",
+		req.Key,
+		"value:",
+		req.Value,
+		"ttl:",
+		req.TTL,
+	)
 
-	defer resp.Body.Close()
+	nodes := cl.GetNodes(
+		req.Key,
+		2,
+	)
+
+	// fmt.Println(
+	// 	"nodes responsible for key:",
+	// 	req.Key,nodes
+	// )
 
 
-	w.WriteHeader(resp.StatusCode)
+	success := 0
+
+
+	for _, n := range nodes {
+
+		fmt.Println(
+			"sending to",
+			n.Address,
+		)
+		resp, err := sendToNode(
+			n,
+			http.MethodPost,
+			body,
+			"/cache",
+		)
+
+
+		if err != nil {
+			continue
+		}
+
+
+		resp.Body.Close()
+
+
+		if resp.StatusCode >= 200 &&
+		   resp.StatusCode < 300 {
+
+			success++
+		}
+	}
+
+
+	if success == 0 {
+
+		http.Error(
+			w,
+			"all replicas failed",
+			http.StatusServiceUnavailable,
+		)
+
+		return
+	}
+
+
+	w.WriteHeader(
+		http.StatusCreated,
+	)
+
+
+	json.NewEncoder(w).Encode(
+		map[string]int{
+			"replicas_written":success,
+		},
+	)
 }
-
 
 func cacheHandler(
 	w http.ResponseWriter,
@@ -251,12 +350,14 @@ func main(){
 	)
 
 
+	cl.AddNode(n1)
+	cl.AddNode(n2)
+
 	n1.Start()
 	n2.Start()
 
 
-	cl.AddNode(n1)
-	cl.AddNode(n2)
+	
 
    fmt.Println("router running on :8080")
 

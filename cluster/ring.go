@@ -5,6 +5,7 @@ import (
 	"sort"
 "strconv"
 	"dist-cache/node"
+	"fmt"
 )
 
 
@@ -86,29 +87,55 @@ func (r *HashRing) AddNode(
 	)
 }
 
-func (r *HashRing) GetNode(
+func (r *HashRing) GetNodes(
 	key string,
-) *node.Node {
-
-
-	if len(r.nodes)==0 {
-		return nil
-	}
+	count int,
+) []*node.Node {
 
 
 	hash := hashKey(key)
 
 
-	for _, n := range r.nodes {
+	start := 0
 
+
+	for i,n := range r.nodes {
 
 		if hash <= n.Hash {
-
-			return n.Node
+			start=i
+			break
 		}
 	}
 
 
-	// wrap around
-	return r.nodes[0].Node
+	result := make([]*node.Node,0)
+
+	seen := map[string]bool{}
+
+	fmt.Println("hash for key",key,"is",hash)
+
+	for i:=0; len(result)<count; i++ {
+
+
+		index :=
+			(start+i)%len(r.nodes)
+
+
+		n :=
+			r.nodes[index].Node
+
+
+		if !seen[n.ID] {
+
+			result = append(
+				result,
+				n,
+			)
+
+			seen[n.ID]=true
+		}
+	}
+
+	fmt.Println("nodes responsible for key",key,"are",result)
+	return result
 }

@@ -101,6 +101,14 @@ func (n *Node) get(
 
 	value, ok := n.Cache.Get(key)
 
+	fmt.Println(
+		"get request for key:",
+		key,
+		"value:",
+		value,
+		"found:",
+		ok,
+	)
 
 	if !ok {
 
@@ -136,17 +144,22 @@ func (n *Node) set(
 
 
 	if err != nil {
-
 		http.Error(
 			w,
 			err.Error(),
-			http.StatusBadRequest,
+			400,
 		)
-
 		return
 	}
 
-
+	fmt.Println(
+		"set request for key:",
+		req.Key,
+		"value:",
+		req.Value,
+		"ttl:",
+		req.TTL,
+	)
 	n.Cache.Set(
 		req.Key,
 		req.Value,
@@ -154,8 +167,10 @@ func (n *Node) set(
 	)
 
 
-	w.WriteHeader(
-		http.StatusCreated,
+	json.NewEncoder(w).Encode(
+		map[string]string{
+			"status":"stored",
+		},
 	)
 }
 
