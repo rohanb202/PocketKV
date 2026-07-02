@@ -14,6 +14,7 @@ type Node struct {
 	ID string
 	Address string
 	Cache *cache.Cache
+	healthy bool
 }
 
 
@@ -42,6 +43,7 @@ func NewNode(
 		ID:id,
 		Address:address,
 		Cache:c,
+		healthy:true,
 	}
 }
 
@@ -191,6 +193,21 @@ func (n *Node) delete(
 	)
 }
 
+
+func (n *Node) health(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	w.WriteHeader(http.StatusOK)
+
+	json.NewEncoder(w).Encode(
+		map[string]string{
+			"status": "ok",
+			"node":   n.ID,
+		},
+	)
+}
+
 func (n *Node) Start() {
 
 	mux := http.NewServeMux()
@@ -200,6 +217,10 @@ func (n *Node) Start() {
 		n.handleCache,
 	)
 
+	mux.HandleFunc(
+		"/health",
+		n.health,
+	)
 
 	go func() {
 
