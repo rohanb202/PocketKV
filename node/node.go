@@ -239,3 +239,10 @@ func (n *Node) Start() {
 	}()
 
 }
+
+func (n *Node) SetHealthy(v bool) {
+    n.healthy = v
+}
+func (n *Node) IsHealthy() bool {
+	return n.healthy
+}

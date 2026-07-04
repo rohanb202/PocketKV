@@ -3,6 +3,8 @@ package cluster
 
 import (
 	"dist-cache/node"
+	"time"
+	"context"
 
 )
 
@@ -10,6 +12,9 @@ import (
 type Cluster struct {
 
 	ring *HashRing
+	nodes []*node.Node
+	checker *HealthChecker
+	replicationFactor int
 
 }
 
@@ -21,13 +26,22 @@ func NewCluster() *Cluster {
 			nodes:make([]RingNode,0),
 			virtualNodes:100,
 		},
+		nodes: make([]*node.Node, 0),
+		checker: NewHealthChecker(2 * time.Second),
+		replicationFactor: 3,
 	}
 }
+
+
+func (c *Cluster) ReplicationFactor() int {
+    return c.replicationFactor
+}
+
 
 func (c *Cluster) AddNode(
 	n *node.Node,
 ){
-
+	c.nodes = append(c.nodes, n)
 	c.ring.AddNode(n)
 
 }
@@ -40,4 +54,33 @@ func (c *Cluster) GetNodes(
 
 	return c.ring.GetNodes(key, count)
 
+}
+
+func (c *Cluster) GetHealthyNodes(key string,count int) []*node.Node {
+
+	healthyNodes := make([]*node.Node, 0)
+	
+	nodes := c.ring.GetRingOrder(key)
+
+	for _, n := range nodes {
+		if n.IsHealthy() {
+			healthyNodes = append(healthyNodes, n)
+		}
+		if len(healthyNodes) == count {
+			break
+		}
+	}
+
+	return healthyNodes
+
+}
+
+func (c *Cluster) Start(
+    ctx context.Context,
+) {
+    go c.checker.Start(
+        ctx,
+        2*time.Second,
+        c.nodes,
+    )
 }

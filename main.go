@@ -7,9 +7,9 @@ import (
 	"dist-cache/node"
 	"dist-cache/cluster"
 	"bytes"
-	"fmt"
 	"io"
 	"time"
+	"log/slog"
 )
 
 
@@ -58,11 +58,12 @@ func getValue(
 	key := r.URL.Query().Get("key")
 
 
-	nodes := cl.GetNodes(
+	nodes := cl.GetHealthyNodes(
 		key,
-		2,
+		cl.ReplicationFactor(),
 	)
 
+	
 
 	for _, n := range nodes {
 
@@ -116,9 +117,9 @@ func deleteValue(
 	key := r.URL.Query().Get("key")
 
 
-	nodes := cl.GetNodes(
+	nodes := cl.GetHealthyNodes(
 		key,
-		2,
+		cl.ReplicationFactor(),
 	)
 
 
@@ -210,18 +211,17 @@ func setValue(
 		return
 	}
 
-	fmt.Println(
+	slog.Info(
 		"set request for key:",
-		req.Key,
-		"value:",
-		req.Value,
-		"ttl:",
-		req.TTL,
+		slog.String("key", req.Key),
+		slog.String("value", req.Value),
+		slog.Int("ttl", req.TTL),
 	)
 
-	nodes := cl.GetNodes(
+
+	nodes := cl.GetHealthyNodes(
 		req.Key,
-		2,
+		cl.ReplicationFactor(),
 	)
 
 	// fmt.Println(
@@ -235,10 +235,11 @@ func setValue(
 
 	for _, n := range nodes {
 
-		fmt.Println(
-			"sending to",
-			n.Address,
+		slog.Info(
+			"sending request to node:",
+			slog.String("node", n.Address),
 		)
+
 		resp, err := sendToNode(
 			n,
 			http.MethodPost,
@@ -349,17 +350,26 @@ func main(){
 		":8082",
 	)
 
+	n3 := node.NewNode(
+		ctx,
+		"node3",
+		":8084",
+	)
+
 
 	cl.AddNode(n1)
 	cl.AddNode(n2)
+	cl.AddNode(n3)
+
+	cl.Start(ctx)
 
 	n1.Start()
 	n2.Start()
-
+	n3.Start()
 
 	
 
-   fmt.Println("router running on :8080")
+    slog.Info("router running on :8080" )
 
 	http.HandleFunc(
 		"/cache",
