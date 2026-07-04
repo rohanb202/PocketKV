@@ -15,6 +15,7 @@ import (
 
 var cl *cluster.Cluster
 
+
 func sendToNode(
 	n *node.Node,
 	method string,
@@ -49,6 +50,7 @@ func sendToNode(
 
 	return client.Do(req)
 }
+
 
 func getValue(
 	w http.ResponseWriter,
@@ -108,6 +110,7 @@ func getValue(
 		http.StatusNotFound,
 	)
 }
+
 
 func deleteValue(
 	w http.ResponseWriter,
@@ -176,117 +179,111 @@ type SetRequest struct {
 	TTL int `json:"ttl"`
 }
 
-
-
 func setValue(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
 
 	body, err := io.ReadAll(r.Body)
-	
 	if err != nil {
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusBadRequest,
-		)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
 
 	var req SetRequest
 
-	err = json.Unmarshal(
-		body,
-		&req,
-	)
-
-	if err != nil {
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusBadRequest,
-		)
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	slog.Info(
-		"set request for key:",
-		slog.String("key", req.Key),
-		slog.String("value", req.Value),
-		slog.Int("ttl", req.TTL),
-	)
-
 
 	nodes := cl.GetHealthyNodes(
 		req.Key,
 		cl.ReplicationFactor(),
 	)
 
-	// fmt.Println(
-	// 	"nodes responsible for key:",
-	// 	req.Key,nodes
-	// )
-
-
-	success := 0
-
-
-	for _, n := range nodes {
-
-		slog.Info(
-			"sending request to node:",
-			slog.String("node", n.Address),
-		)
-
-		resp, err := sendToNode(
-			n,
-			http.MethodPost,
-			body,
-			"/cache",
-		)
-
-
-		if err != nil {
-			continue
-		}
-
-
-		resp.Body.Close()
-
-
-		if resp.StatusCode >= 200 &&
-		   resp.StatusCode < 300 {
-
-			success++
-		}
-	}
-
-
-	if success == 0 {
-
-		http.Error(
-			w,
-			"all replicas failed",
-			http.StatusServiceUnavailable,
-		)
-
+	if len(nodes) == 0 {
+		http.Error(w, "no healthy replicas", http.StatusServiceUnavailable)
 		return
 	}
 
+	resultChan := make(chan bool, len(nodes))
 
-	w.WriteHeader(
-		http.StatusCreated,
-	)
+	for _, n := range nodes {
 
+		go func(node *node.Node) {
 
-	json.NewEncoder(w).Encode(
-		map[string]int{
-			"replicas_written":success,
-		},
-	)
+			resp, err := sendToNode(
+				node,
+				http.MethodPost,
+				body,
+				"/cache",
+			)
+
+			if err != nil {
+				slog.Error(
+					"write failed",
+					slog.String("node", node.Address),
+					slog.Any("error", err),
+				)
+
+				resultChan <- false
+				return
+			}
+
+			defer resp.Body.Close()
+
+			resultChan <- (resp.StatusCode >= 200 &&
+				resp.StatusCode < 300)
+
+		}(n)
+	}
+
+	success := 0
+	failure := 0
+
+	writeQuorum := cl.WriteQuorum()
+
+	for i := 0; i < len(nodes); i++ {
+
+		ok := <-resultChan
+
+		if ok {
+			success++
+
+			if success >= writeQuorum {
+
+				w.WriteHeader(http.StatusCreated)
+
+				json.NewEncoder(w).Encode(
+					map[string]any{
+						"replicas_written": success,
+						"quorum":           true,
+					},
+				)
+
+				return
+			}
+
+		} else {
+
+			failure++
+
+			// Quorum is mathematically impossible now
+			if failure > len(nodes)-writeQuorum {
+
+				http.Error(
+					w,
+					"write quorum not reached",
+					http.StatusServiceUnavailable,
+				)
+
+				return
+			}
+		}
+	}
 }
+
 
 func cacheHandler(
 	w http.ResponseWriter,

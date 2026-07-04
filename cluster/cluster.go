@@ -15,6 +15,7 @@ type Cluster struct {
 	nodes []*node.Node
 	checker *HealthChecker
 	replicationFactor int
+	writeQuorum int
 
 }
 
@@ -29,12 +30,17 @@ func NewCluster() *Cluster {
 		nodes: make([]*node.Node, 0),
 		checker: NewHealthChecker(2 * time.Second),
 		replicationFactor: 3,
+		writeQuorum: 2,
 	}
 }
 
 
 func (c *Cluster) ReplicationFactor() int {
     return c.replicationFactor
+}
+
+func (c *Cluster) WriteQuorum() int {
+    return c.writeQuorum
 }
 
 
