@@ -16,6 +16,8 @@ type Cluster struct {
 	checker *HealthChecker
 	replicationFactor int
 	writeQuorum int
+	readQuorum int
+	deleteQuorum int
 
 }
 
@@ -31,6 +33,8 @@ func NewCluster() *Cluster {
 		checker: NewHealthChecker(2 * time.Second),
 		replicationFactor: 3,
 		writeQuorum: 2,
+		readQuorum: 2,
+		deleteQuorum: 2,
 	}
 }
 
@@ -41,6 +45,14 @@ func (c *Cluster) ReplicationFactor() int {
 
 func (c *Cluster) WriteQuorum() int {
     return c.writeQuorum
+}
+
+func (c *Cluster) ReadQuorum() int {
+	return c.readQuorum
+}
+
+func (c *Cluster) DeleteQuorum() int {
+	return c.deleteQuorum
 }
 
 

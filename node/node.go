@@ -19,9 +19,10 @@ type Node struct {
 
 
 type SetRequest struct {
-	Key string `json:"key"`
-	Value string `json:"value"`
-	TTL int `json:"ttl"`
+	Key     string `json:"key"`
+	Value   string `json:"value"`
+	TTL     int    `json:"ttl"`
+	Version int64  `json:"version"`
 }
 
 
@@ -101,13 +102,15 @@ func (n *Node) get(
 	key := r.URL.Query().Get("key")
 
 
-	value, ok := n.Cache.Get(key)
+	value, version, ok := n.Cache.Get(key)
 
 	fmt.Println(
 		"get request for key:",
 		key,
 		"value:",
 		value,
+		"version:",
+		version,
 		"found:",
 		ok,
 	)
@@ -124,8 +127,9 @@ func (n *Node) get(
 
 
 	json.NewEncoder(w).Encode(
-		map[string]string{
-			"value":value,
+		map[string]interface{}{
+			"value": value,
+			"version": version,
 		},
 	)
 }
@@ -166,6 +170,7 @@ func (n *Node) set(
 		req.Key,
 		req.Value,
 		time.Duration(req.TTL)*time.Second,
+		req.Version,
 	)
 
 

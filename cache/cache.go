@@ -10,6 +10,7 @@ import (
 type Item struct {
 	Value string
 	Expiry time.Time
+	Version int64
 }
 
 type ExpiryItem struct {
@@ -90,11 +91,16 @@ func NewCache() *Cache {
 		expiryMap: make(map[string]*ExpiryItem),
 	}
 }
-func (c *Cache) Set(key, value string, ttl time.Duration) {
+func (c *Cache) Set(key, value string, ttl time.Duration, version int64) {
     c.mu.Lock()
     defer c.mu.Unlock()
     expiry := time.Now().Add(ttl)
-    c.data[key] = Item{Value: value, Expiry: expiry}
+
+	if existing, ok := c.data[key]; ok && existing.Version > version{
+		return
+	}
+
+    c.data[key] = Item{Value: value, Expiry: expiry, Version: version}
 
     if existing, ok := c.expiryMap[key]; ok {
         existing.expiry = expiry
@@ -106,18 +112,18 @@ func (c *Cache) Set(key, value string, ttl time.Duration) {
     }
 }
 
-func (c *Cache) Get(key string) (string, bool) {
+func (c *Cache) Get(key string) (string, int64, bool) {
     c.mu.Lock()
     defer c.mu.Unlock()
     value, ok := c.data[key]
     if !ok {
-        return "", false
+        return "", 0, false
     }
     if value.Expiry.Before(time.Now()) {
         delete(c.data, key)
-        return "", false
+        return "", 0, false
     }
-    return value.Value, true
+    return value.Value, value.Version, true
 }
 
 func (c *Cache) Delete(key string) {
