@@ -7,9 +7,9 @@ import (
 	"dist-cache/node"
 	"dist-cache/cluster"
 	"bytes"
-	"io"
 	"time"
 	"log/slog"
+	"fmt"
 )
 
 
@@ -55,10 +55,12 @@ func sendToNode(
 
 
 type ReadResult struct {
+	Node    *node.Node
     Found   bool
     Value   string
     Version int64
     Err     error
+	Deleted bool
 }
 
 func getValue(
@@ -126,6 +128,7 @@ func getValue(
 			var data struct {
 				Value   string `json:"value"`
 				Version int64  `json:"version"`
+				Deleted bool   `json:"deleted"`
 			}
 
 			if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -144,6 +147,7 @@ func getValue(
 				Found:   true,
 				Value:   data.Value,
 				Version: data.Version,
+				Deleted: data.Deleted,
 			}:
 
 			case <-ctx.Done():
@@ -203,9 +207,41 @@ func getValue(
 		}
 	}
 
+
+	for _, replica := range success {
+
+		if replica.Version < latest.Version {
+
+			go repairReplica(context.Background(), replica.Node, WriteRequest{
+				Key:     key,
+				Value:   latest.Value,
+				Version: latest.Version,
+				Deleted: latest.Deleted,
+			})
+		}
+	}
+
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
+	)
+
+	if latest.Deleted {
+		http.Error(
+			w,
+			"key not found",
+			http.StatusNotFound,
+		)
+		return
+	}
+
+	slog.Info(
+		"get request for key:",
+		key,
+		"value:",
+		latest.Value,
+		"version:",
+		latest.Version,
 	)
 
 	json.NewEncoder(w).Encode(
@@ -217,28 +253,163 @@ func getValue(
 }
 
 
-func deleteValue(
-	w http.ResponseWriter,
-	r *http.Request,
+func repairReplica(
+	ctx context.Context,
+	n *node.Node,
+	req WriteRequest,
 ) {
 
-	key := r.URL.Query().Get("key")
+	body, err := json.Marshal(req)
+	if err != nil {
+		return
+	}
+
+	resp, err := sendToNode(
+		ctx,
+		n,
+		http.MethodPost,
+		body,
+		"/cache",
+	)
+
+	if err != nil {
+		return
+	}
+
+	defer resp.Body.Close()
+}
+
+// func deleteValue(
+// 	w http.ResponseWriter,
+// 	r *http.Request,
+// ) {
+
+// 	key := r.URL.Query().Get("key")
+
+// 	nodes := cl.GetHealthyNodes(
+// 		key,
+// 		cl.ReplicationFactor(),
+// 	)
+
+// 	if len(nodes) == 0 {
+// 		http.Error(
+// 			w,
+// 			"no healthy replicas",
+// 			http.StatusServiceUnavailable,
+// 		)
+// 		return
+// 	}
+
+// 	ctx, cancel := context.WithCancel(r.Context())
+// 	defer cancel()
+
+// 	resultChan := make(chan bool, len(nodes))
+
+// 	for _, n := range nodes {
+
+// 		go func(node *node.Node) {
+
+// 			resp, err := sendToNode(
+// 				ctx,
+// 				node,
+// 				http.MethodDelete,
+// 				nil,
+// 				"/cache?key="+key,
+// 			)
+
+// 			if err != nil {
+// 				select {
+// 				case resultChan <- false:
+// 				case <-ctx.Done():
+// 				}
+// 				return
+// 			}
+
+// 			defer resp.Body.Close()
+
+// 			ok := resp.StatusCode >= http.StatusOK &&
+// 				resp.StatusCode < http.StatusMultipleChoices
+
+// 			select {
+// 			case resultChan <- ok:
+// 			case <-ctx.Done():
+// 			}
+
+// 		}(n)
+// 	}
+
+// 	success := 0
+// 	failure := 0
+
+// 	deleteQuorum := cl.DeleteQuorum()
+
+// 	for i := 0; i < len(nodes); i++ {
+
+// 		ok := <-resultChan
+
+// 		if ok {
+
+// 			success++
+
+// 			if success >= deleteQuorum {
+
+// 				cancel()
+
+// 				w.WriteHeader(http.StatusNoContent)
+
+// 				return
+// 			}
+
+// 		} else {
+
+// 			failure++
+
+// 			if failure > len(nodes)-deleteQuorum {
+
+// 				cancel()
+
+// 				http.Error(
+// 					w,
+// 					"delete quorum not reached",
+// 					http.StatusServiceUnavailable,
+// 				)
+
+// 				return
+// 			}
+// 		}
+// 	}
+// }
+
+
+
+type WriteRequest struct {
+    Key     string `json:"key"`
+    Value   string `json:"value,omitempty"`
+    TTL     int    `json:"ttl,omitempty"`
+    Version int64  `json:"version"`
+    Deleted bool   `json:"deleted"`
+}
+
+func replicateWrite(
+	ctx context.Context,
+	req WriteRequest,
+) (int, error) {
 
 	nodes := cl.GetHealthyNodes(
-		key,
+		req.Key,
 		cl.ReplicationFactor(),
 	)
 
 	if len(nodes) == 0 {
-		http.Error(
-			w,
-			"no healthy replicas",
-			http.StatusServiceUnavailable,
-		)
-		return
+		return 0, fmt.Errorf("no healthy replicas")
 	}
 
-	ctx, cancel := context.WithCancel(r.Context())
+	body, err := json.Marshal(req)
+	if err != nil {
+		return 0, err
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	resultChan := make(chan bool, len(nodes))
@@ -250,9 +421,9 @@ func deleteValue(
 			resp, err := sendToNode(
 				ctx,
 				node,
-				http.MethodDelete,
-				nil,
-				"/cache?key="+key,
+				http.MethodPost,
+				body,
+				"/cache",
 			)
 
 			if err != nil {
@@ -279,138 +450,6 @@ func deleteValue(
 	success := 0
 	failure := 0
 
-	deleteQuorum := cl.DeleteQuorum()
-
-	for i := 0; i < len(nodes); i++ {
-
-		ok := <-resultChan
-
-		if ok {
-
-			success++
-
-			if success >= deleteQuorum {
-
-				cancel()
-
-				w.WriteHeader(http.StatusNoContent)
-
-				return
-			}
-
-		} else {
-
-			failure++
-
-			if failure > len(nodes)-deleteQuorum {
-
-				cancel()
-
-				http.Error(
-					w,
-					"delete quorum not reached",
-					http.StatusServiceUnavailable,
-				)
-
-				return
-			}
-		}
-	}
-}
-
-
-
-type SetRequest struct {
-	Key     string `json:"key"`
-	Value   string `json:"value"`
-	TTL     int    `json:"ttl"`
-	Version int64  `json:"version"`
-}
-
-func setValue(
-	w http.ResponseWriter,
-	r *http.Request,
-) {
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	var req SetRequest
-
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	req.Version = time.Now().UnixNano()
-
-
-	
-	nodes := cl.GetHealthyNodes(
-		req.Key,
-		cl.ReplicationFactor(),
-	)
-
-	body, err = json.Marshal(req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if len(nodes) == 0 {
-		http.Error(w, "no healthy replicas", http.StatusServiceUnavailable)
-		return
-	}
-
-	resultChan := make(chan bool, len(nodes))
-
-	ctx, cancel := context.WithCancel(r.Context())
-    defer cancel()
-
-	for _, n := range nodes {
-
-		go func(node *node.Node) {
-
-			resp, err := sendToNode(
-				ctx,
-				node,
-				http.MethodPost,
-				body,
-				"/cache",
-			)
-
-			if err != nil {
-				slog.Error(
-					"write failed",
-					slog.String("node", node.Address),
-					slog.Any("error", err),
-				)
-				
-				select {
-				case resultChan <- false:
-				case <-ctx.Done():
-				}
-
-				return
-			}
-
-			defer resp.Body.Close()
-
-			select {
-			case resultChan <- (resp.StatusCode >= 200 && resp.StatusCode < 300):
-			case <-ctx.Done():
-			}
-			
-
-		}(n)
-	}
-
-	success := 0
-	failure := 0
-
 	writeQuorum := cl.WriteQuorum()
 
 	for i := 0; i < len(nodes); i++ {
@@ -418,39 +457,92 @@ func setValue(
 		ok := <-resultChan
 
 		if ok {
+
 			success++
 
 			if success >= writeQuorum {
-				cancel() // Cancel remaining requests
-				w.WriteHeader(http.StatusCreated)
-
-				json.NewEncoder(w).Encode(
-					map[string]any{
-						"replicas_written": success,
-						"quorum":           true,
-					},
-				)
-
-				return
+				cancel()
+				return success, nil
 			}
 
 		} else {
 
 			failure++
 
-			// Quorum is mathematically impossible now
 			if failure > len(nodes)-writeQuorum {
-				cancel() // Cancel remaining requests
-				http.Error(
-					w,
-					"write quorum not reached",
-					http.StatusServiceUnavailable,
-				)
-
-				return
+				cancel()
+				return success, fmt.Errorf("write quorum not reached")
 			}
 		}
 	}
+
+	return success, fmt.Errorf("write quorum not reached")
+}
+
+
+func setValue(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+
+	var req WriteRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	req.Version = time.Now().UnixNano()
+	req.Deleted = false
+
+	success, err := replicateWrite(r.Context(), req)
+
+	if err != nil {
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusServiceUnavailable,
+		)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"replicas_written": success,
+		"quorum":           true,
+	})
+}
+
+
+func deleteValue(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+
+	req := WriteRequest{
+		Key:     r.URL.Query().Get("key"),
+		Version: time.Now().UnixNano(),
+		Deleted: true,
+	}
+
+	success, err := replicateWrite(r.Context(), req)
+
+	if err != nil {
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusServiceUnavailable,
+		)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+
+	slog.Info(
+		"delete quorum reached",
+		slog.Int("replicas", success),
+	)
 }
 
 

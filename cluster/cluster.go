@@ -17,7 +17,6 @@ type Cluster struct {
 	replicationFactor int
 	writeQuorum int
 	readQuorum int
-	deleteQuorum int
 
 }
 
@@ -34,7 +33,6 @@ func NewCluster() *Cluster {
 		replicationFactor: 3,
 		writeQuorum: 2,
 		readQuorum: 2,
-		deleteQuorum: 2,
 	}
 }
 
@@ -51,9 +49,6 @@ func (c *Cluster) ReadQuorum() int {
 	return c.readQuorum
 }
 
-func (c *Cluster) DeleteQuorum() int {
-	return c.deleteQuorum
-}
 
 
 func (c *Cluster) AddNode(

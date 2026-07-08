@@ -11,6 +11,7 @@ type Item struct {
 	Value string
 	Expiry time.Time
 	Version int64
+	Deleted bool
 }
 
 type ExpiryItem struct {
@@ -112,28 +113,51 @@ func (c *Cache) Set(key, value string, ttl time.Duration, version int64) {
     }
 }
 
-func (c *Cache) Get(key string) (string, int64, bool) {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-    value, ok := c.data[key]
-    if !ok {
-        return "", 0, false
-    }
-    if value.Expiry.Before(time.Now()) {
-        delete(c.data, key)
-        return "", 0, false
-    }
-    return value.Value, value.Version, true
+func (c *Cache) Get(key string) (Item, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, ok := c.data[key]
+	if !ok {
+		return Item{}, false
+	}
+
+	if !item.Deleted && item.Expiry.Before(time.Now()) {
+
+		if expiryItem, ok := c.expiryMap[key]; ok {
+			heap.Remove(c.expiryHeap, expiryItem.index)
+			delete(c.expiryMap, key)
+		}
+
+		delete(c.data, key)
+
+		return Item{}, false
+	}
+
+	return item, true 
 }
 
-func (c *Cache) Delete(key string) {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-    delete(c.data, key)
-    if item, ok := c.expiryMap[key]; ok {
-        heap.Remove(c.expiryHeap, item.index)
-        delete(c.expiryMap, key)
-    }
+func (c *Cache) Delete(
+	key string,
+	version int64,
+) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if existing, ok := c.data[key]; ok &&
+		existing.Version > version {
+		return
+	}
+
+	if expiryItem, ok := c.expiryMap[key]; ok {
+		heap.Remove(c.expiryHeap, expiryItem.index)
+		delete(c.expiryMap, key)
+	}
+
+	c.data[key] = Item{
+		Version: version,
+		Deleted: true,
+	}
 }
 
 func (c *Cache) Cleanup() {

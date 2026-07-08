@@ -68,19 +68,13 @@ func (n *Node) handleCache(
 
 	case http.MethodPost:
 
-		n.set(
+		n.write(
 			w,
 			r,
 		)
-
 
 	case http.MethodDelete:
-
-		n.delete(
-			w,
-			r,
-		)
-
+    	n.write(w, r)
 
 	default:
 
@@ -102,15 +96,15 @@ func (n *Node) get(
 	key := r.URL.Query().Get("key")
 
 
-	value, version, ok := n.Cache.Get(key)
+	value, ok := n.Cache.Get(key)
 
 	fmt.Println(
 		"get request for key:",
 		key,
 		"value:",
-		value,
+		value.Value,
 		"version:",
-		version,
+		value.Version,
 		"found:",
 		ok,
 	)
@@ -128,75 +122,78 @@ func (n *Node) get(
 
 	json.NewEncoder(w).Encode(
 		map[string]interface{}{
-			"value": value,
-			"version": version,
+			"value":   value.Value,
+			"version": value.Version,
+			"deleted": value.Deleted,
 		},
 	)
 }
 
 
 
-func (n *Node) set(
+type WriteRequest struct {
+    Key     string `json:"key"`
+    Value   string `json:"value,omitempty"`
+    TTL     int    `json:"ttl,omitempty"`
+    Version int64  `json:"version"`
+    Deleted bool   `json:"deleted"`
+}
+
+func (n *Node) write(
 	w http.ResponseWriter,
 	r *http.Request,
-){
+) {
 
-	var req SetRequest
+	var req WriteRequest
 
-
-	err := json.NewDecoder(
-		r.Body,
-	).Decode(&req)
-
-
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(
 			w,
 			err.Error(),
-			400,
+			http.StatusBadRequest,
 		)
 		return
 	}
 
-	fmt.Println(
-		"set request for key:",
-		req.Key,
-		"value:",
-		req.Value,
-		"ttl:",
-		req.TTL,
-	)
-	n.Cache.Set(
-		req.Key,
-		req.Value,
-		time.Duration(req.TTL)*time.Second,
-		req.Version,
-	)
+	if req.Deleted {
 
+		n.Cache.Delete(
+			req.Key,
+			req.Version,
+		)
+
+	} else {
+
+		n.Cache.Set(
+			req.Key,
+			req.Value,
+			time.Duration(req.TTL)*time.Second,
+			req.Version,
+		)
+	}
 
 	json.NewEncoder(w).Encode(
 		map[string]string{
-			"status":"stored",
+			"status": "stored",
 		},
 	)
 }
 
+// func (n *Node) delete(
+// 	w http.ResponseWriter,
+// 	r *http.Request,
+// ){
 
-func (n *Node) delete(
-	w http.ResponseWriter,
-	r *http.Request,
-){
-
-	key := r.URL.Query().Get("key")
-
-
-	n.Cache.Delete(key)
+// 	key := r.URL.Query().Get("key")
 
 
-	w.WriteHeader(
-		http.StatusNoContent,
-	)
-}
+// 	n.Cache.Delete(key)
+
+
+// 	w.WriteHeader(
+// 		http.StatusNoContent,
+// 	)
+// }
 
 
 func (n *Node) health(
