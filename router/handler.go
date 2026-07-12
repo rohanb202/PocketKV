@@ -1,59 +1,15 @@
-package main
+package router
 
 import (
-	"encoding/json"
-	"net/http"
-	"context"
 	"dist-cache/node"
-	"dist-cache/cluster"
-	"bytes"
+	"encoding/json"
+	"context"
+	"net/http"
 	"time"
 	"log/slog"
 	"fmt"
+
 )
-
-
-var cl *cluster.Cluster
-
-
-func sendToNode(
-    ctx context.Context,
-	n *node.Node,
-	method string,
-	body []byte,
-	path string,
-) (*http.Response, error) {
-
-	url := "http://" + n.Address + path
-
-
-	req, err := http.NewRequestWithContext(
-		ctx,
-		method,
-		url,
-		bytes.NewBuffer(body),
-	)
-
-	if err != nil {
-		return nil, err
-	}
-
-
-	req.Header.Set(
-		"Content-Type",
-		"application/json",
-	)
-
-
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-	}
-
-
-	return client.Do(req)
-}
-
-
 type ReadResult struct {
 	Node    *node.Node
     Found   bool
@@ -63,16 +19,16 @@ type ReadResult struct {
 	Deleted bool
 }
 
-func getValue(
+func (rt *Router) getValue(
 	w http.ResponseWriter,
 	r *http.Request,
-) {
+) {  
 
 	key := r.URL.Query().Get("key")
 
-	nodes := cl.GetHealthyNodes(
+	nodes := rt.Cluster.GetHealthyNodes(
 		key,
-		cl.ReplicationFactor(),
+		rt.Cluster.ReplicationFactor(),
 	)
 
 	if len(nodes) == 0 {
@@ -84,7 +40,7 @@ func getValue(
 		return
 	}
 
-	readQuorum := cl.ReadQuorum()
+	readQuorum := rt.Cluster.ReadQuorum()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -148,6 +104,7 @@ func getValue(
 				Value:   data.Value,
 				Version: data.Version,
 				Deleted: data.Deleted,
+				Node:    node,
 			}:
 
 			case <-ctx.Done():
@@ -217,6 +174,7 @@ func getValue(
 				Value:   latest.Value,
 				Version: latest.Version,
 				Deleted: latest.Deleted,
+				
 			})
 		}
 	}
@@ -279,107 +237,6 @@ func repairReplica(
 	defer resp.Body.Close()
 }
 
-// func deleteValue(
-// 	w http.ResponseWriter,
-// 	r *http.Request,
-// ) {
-
-// 	key := r.URL.Query().Get("key")
-
-// 	nodes := cl.GetHealthyNodes(
-// 		key,
-// 		cl.ReplicationFactor(),
-// 	)
-
-// 	if len(nodes) == 0 {
-// 		http.Error(
-// 			w,
-// 			"no healthy replicas",
-// 			http.StatusServiceUnavailable,
-// 		)
-// 		return
-// 	}
-
-// 	ctx, cancel := context.WithCancel(r.Context())
-// 	defer cancel()
-
-// 	resultChan := make(chan bool, len(nodes))
-
-// 	for _, n := range nodes {
-
-// 		go func(node *node.Node) {
-
-// 			resp, err := sendToNode(
-// 				ctx,
-// 				node,
-// 				http.MethodDelete,
-// 				nil,
-// 				"/cache?key="+key,
-// 			)
-
-// 			if err != nil {
-// 				select {
-// 				case resultChan <- false:
-// 				case <-ctx.Done():
-// 				}
-// 				return
-// 			}
-
-// 			defer resp.Body.Close()
-
-// 			ok := resp.StatusCode >= http.StatusOK &&
-// 				resp.StatusCode < http.StatusMultipleChoices
-
-// 			select {
-// 			case resultChan <- ok:
-// 			case <-ctx.Done():
-// 			}
-
-// 		}(n)
-// 	}
-
-// 	success := 0
-// 	failure := 0
-
-// 	deleteQuorum := cl.DeleteQuorum()
-
-// 	for i := 0; i < len(nodes); i++ {
-
-// 		ok := <-resultChan
-
-// 		if ok {
-
-// 			success++
-
-// 			if success >= deleteQuorum {
-
-// 				cancel()
-
-// 				w.WriteHeader(http.StatusNoContent)
-
-// 				return
-// 			}
-
-// 		} else {
-
-// 			failure++
-
-// 			if failure > len(nodes)-deleteQuorum {
-
-// 				cancel()
-
-// 				http.Error(
-// 					w,
-// 					"delete quorum not reached",
-// 					http.StatusServiceUnavailable,
-// 				)
-
-// 				return
-// 			}
-// 		}
-// 	}
-// }
-
 
 
 type WriteRequest struct {
@@ -390,14 +247,14 @@ type WriteRequest struct {
     Deleted bool   `json:"deleted"`
 }
 
-func replicateWrite(
+func (rt *Router) replicateWrite(
 	ctx context.Context,
 	req WriteRequest,
 ) (int, error) {
 
-	nodes := cl.GetHealthyNodes(
+	nodes := rt.Cluster.GetHealthyNodes(
 		req.Key,
-		cl.ReplicationFactor(),
+		rt.Cluster.ReplicationFactor(),
 	)
 
 	if len(nodes) == 0 {
@@ -450,7 +307,7 @@ func replicateWrite(
 	success := 0
 	failure := 0
 
-	writeQuorum := cl.WriteQuorum()
+	writeQuorum := rt.Cluster.WriteQuorum()
 
 	for i := 0; i < len(nodes); i++ {
 
@@ -480,7 +337,7 @@ func replicateWrite(
 }
 
 
-func setValue(
+func (rt *Router) setValue(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
@@ -495,7 +352,7 @@ func setValue(
 	req.Version = time.Now().UnixNano()
 	req.Deleted = false
 
-	success, err := replicateWrite(r.Context(), req)
+	success, err := rt.replicateWrite(r.Context(), req)
 
 	if err != nil {
 		http.Error(
@@ -515,7 +372,7 @@ func setValue(
 }
 
 
-func deleteValue(
+func (rt *Router) deleteValue(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
@@ -526,7 +383,7 @@ func deleteValue(
 		Deleted: true,
 	}
 
-	success, err := replicateWrite(r.Context(), req)
+	success, err := rt.replicateWrite(r.Context(), req)
 
 	if err != nil {
 		http.Error(
@@ -546,7 +403,7 @@ func deleteValue(
 }
 
 
-func cacheHandler(
+func (rt *Router) CacheHandler(
 	w http.ResponseWriter,
 	r *http.Request,
 ){
@@ -556,17 +413,17 @@ func cacheHandler(
 
 		case http.MethodPost:
 
-			setValue(w,r)
+			rt.setValue(w,r)
 
 
 		case http.MethodGet:
 
-			getValue(w,r)
+			rt.getValue(w,r)
 
 
 		case http.MethodDelete:
 
-			deleteValue(w,r)
+			rt.deleteValue(w,r)
 
 
 		default:
@@ -578,65 +435,4 @@ func cacheHandler(
 			)
 	}
 
-}
-
-
-
-
-func main(){
-
-	ctx,cancel := context.WithCancel(
-		context.Background(),
-	)
-
-	defer cancel()
-
-
-	cl = cluster.NewCluster()
-
-
-	n1 := node.NewNode(
-		ctx,
-		"node1",
-		":8081",
-	)
-
-
-	n2 := node.NewNode(
-		ctx,
-		"node2",
-		":8082",
-	)
-
-	n3 := node.NewNode(
-		ctx,
-		"node3",
-		":8084",
-	)
-
-
-	cl.AddNode(n1)
-	cl.AddNode(n2)
-	cl.AddNode(n3)
-
-	cl.Start(ctx)
-
-	n1.Start()
-	n2.Start()
-	n3.Start()
-
-	
-
-    slog.Info("router running on :8080" )
-
-	http.HandleFunc(
-		"/cache",
-		cacheHandler,
-	)
-
-
-	http.ListenAndServe(
-		":8080",
-		nil,
-	)
 }

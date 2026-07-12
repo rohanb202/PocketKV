@@ -7,6 +7,7 @@ import (
 	"time"
 	"fmt"
 	"dist-cache/cache"
+	"log/slog"
 )
 
 
@@ -210,36 +211,23 @@ func (n *Node) health(
 	)
 }
 
-func (n *Node) Start() {
+func (n *Node) Start() error {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc(
-		"/cache",
-		n.handleCache,
+	mux.HandleFunc("/cache", n.handleCache)
+	mux.HandleFunc("/health", n.health)
+
+	slog.Info(
+		"node started",
+		slog.String("id", n.ID),
+		slog.String("address", n.Address),
 	)
 
-	mux.HandleFunc(
-		"/health",
-		n.health,
+	return http.ListenAndServe(
+		n.Address,
+		mux,
 	)
-
-	go func() {
-
-
-		fmt.Println("node running on :", n.Address)
-
-		err := http.ListenAndServe(
-			n.Address,
-			mux,
-		)
-
-		if err != nil {
-			panic(err)
-		}
-
-	}()
-
 }
 
 func (n *Node) SetHealthy(v bool) {
