@@ -1,6 +1,6 @@
 # PocketKV
 
-A distributed in-memory key-value store built in **Go**, inspired by the design principles of Amazon Dynamo. PocketKV implements **consistent hashing**, **replication**, **quorum-based reads/writes**, **versioned updates**, **tombstones**, and **read repair** to provide a fault-tolerant and horizontally scalable cache.
+A distributed in-memory key-value store written in Go featuring consistent hashing, quorum-based replication, read repair, TTL expiration, and Dockerized multi-node deployment.
 
 > Built from scratch to explore distributed systems fundamentals including data partitioning, replication, consistency, concurrency, and fault tolerance.
 
@@ -193,18 +193,40 @@ The router performs replica requests concurrently and returns as soon as quorum 
 
 ---
 
-# Performance
+## Benchmark Environment
 
-Benchmarked locally using **Docker Compose** and **hey**.
+| Component | Value |
+|----------|-------|
+| CPU | AMD Ryzen 9 4900H with Radeon Graphics |
+| Available CPUs (WSL2) | 8 |
+| Memory | 12 GB |
+| OS | Ubuntu 24.04.4 LTS (WSL2) |
+| Go | 1.22.2 |
+| Docker | 29.0.1 |
+| Deployment | Docker Compose (1 Router + 3 Cache Nodes) |
+| Benchmark Tool | hey |
 
-| Operation | Concurrency |  Throughput | Average Latency |
-| --------- | ----------: | ----------: | --------------: |
-| GET       |         100 | ~1578 req/s |          ~61 ms |
-| GET       |         200 | ~1656 req/s |         ~117 ms |
-| GET       |         500 | ~1778 req/s |         ~272 ms |
-| POST      |          50 | ~1337 req/s |          ~36 ms |
+---
 
-A shared `http.Client` with a tuned connection pool significantly improved throughput under concurrent load and eliminated request failures observed during initial benchmarking.
+## Performance
+
+Benchmarks were executed against a Docker Compose deployment consisting of **1 router and 3 cache nodes**.
+
+### GET
+
+| Concurrency | Throughput | Average Latency |
+|------------:|-----------:|----------------:|
+| 100 | **3,041 req/s** | **31 ms** |
+| 200 | **3,330 req/s** | **58 ms** |
+| 500 | **3,470 req/s** | **138 ms** |
+
+### POST
+
+| Concurrency | Throughput | Average Latency |
+|------------:|-----------:|----------------:|
+| 50 | **2,654 req/s** | **18 ms** |
+
+> **Note:** Benchmark results were collected on local hardware and are intended for comparison purposes. Actual performance will vary depending on CPU, memory, operating system, Docker configuration, and workload characteristics.
 
 ---
 
@@ -342,18 +364,6 @@ Returns
 * Mutexes
 * Context
 * Min Heap
-
----
-
-# Future Improvements
-
-* Hinted handoff
-* Anti-entropy synchronization
-* Dynamic node membership
-* Automatic data rebalancing
-* Persistent storage backend
-* Prometheus metrics
-* gRPC transport
 
 ---
 

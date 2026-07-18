@@ -12,11 +12,12 @@ import (
 var httpClient = &http.Client{
     Timeout: 2 * time.Second,
     Transport: &http.Transport{
-        MaxIdleConns:        100,
-        MaxIdleConnsPerHost: 100,
-        MaxConnsPerHost:     100,
-        IdleConnTimeout:     90 * time.Second,
-    },
+		MaxIdleConnsPerHost:   200,  // bump from 100
+		MaxConnsPerHost:       200,
+		IdleConnTimeout:       90 * time.Second,
+		DisableKeepAlives:     false,
+		ForceAttemptHTTP2:     true,  // try HTTP/2 automatically
+	},
 }
 
 func sendToNode(
