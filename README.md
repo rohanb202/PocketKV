@@ -1,183 +1,377 @@
 # PocketKV
 
-A distributed in-memory key-value cache built in **Go** to explore the fundamentals of distributed systems. PocketKV implements consistent hashing, replication, quorum-based consistency, tombstones, read repair, and concurrent request handling using Go's concurrency primitives.
+A distributed in-memory key-value store built in **Go**, inspired by the design principles of Amazon Dynamo. PocketKV implements **consistent hashing**, **replication**, **quorum-based reads/writes**, **versioned updates**, **tombstones**, and **read repair** to provide a fault-tolerant and horizontally scalable cache.
+
+> Built from scratch to explore distributed systems fundamentals including data partitioning, replication, consistency, concurrency, and fault tolerance.
+
+---
 
 ## Features
 
-* Distributed in-memory key-value store
-* Consistent hashing with virtual nodes
+* Consistent hashing with virtual nodes for data partitioning
 * Configurable replication factor
-* Read, write, and delete quorums
-* Version-based conflict resolution
-* Tombstones for safe deletes
-* Asynchronous read repair
+* Quorum-based Read, Write, and Delete operations
+* Versioned writes using timestamps
+* Tombstone-based deletes
+* Read repair for eventual consistency
 * TTL-based key expiration
-* Background cleanup workers
-* Health checking of cache nodes
-* Parallel replication using goroutines and channels
-* Context-aware request cancellation
-* HTTP-based inter-node communication
+* Background cleanup of expired entries
+* Concurrent cache operations using goroutines and synchronization primitives
+* HTTP-based communication between router and cache nodes
+* Health monitoring for replica selection
+* Dockerized multi-node deployment with Docker Compose
 
 ---
 
 ## Architecture
 
 ```
-                   +----------------------+
-                   |        Router        |
-                   |----------------------|
-                   | Consistent Hash Ring |
-                   | Quorum Coordinator   |
-                   +----------+-----------+
-                              |
-              -------------------------------------
-             |                  |                  |
-     +-------v------+   +-------v------+   +-------v------+
-     |    Node 1    |   |    Node 2    |   |    Node 3    |
-     |--------------|   |--------------|   |--------------|
-     | In-Memory KV |   | In-Memory KV |   | In-Memory KV |
-     | TTL Cleanup  |   | TTL Cleanup  |   | TTL Cleanup  |
-     +--------------+   +--------------+   +--------------+
+                  Client
+                     │
+                     ▼
+              +---------------+
+              |    Router     |
+              +---------------+
+                │     │     │
+      ┌─────────┘     │     └─────────┐
+      ▼               ▼               ▼
++------------+  +------------+  +------------+
+|   Node 1   |  |   Node 2   |  |   Node 3   |
+| In-Memory  |  | In-Memory  |  | In-Memory  |
+|   Cache    |  |   Cache    |  |   Cache    |
++------------+  +------------+  +------------+
+
+      Consistent Hash Ring
+           Replication
+        Read / Write Quorums
 ```
 
-The router is responsible for:
-
-* Consistent hash lookup
-* Selecting replica nodes
-* Coordinating read/write/delete quorums
-* Performing read repair
-* Monitoring node health
-
-Each cache node:
-
-* Stores data locally
-* Maintains key versions
-* Handles TTL expiration
-* Processes HTTP requests independently
+The router is stateless. It determines the replica set for each key using consistent hashing and coordinates quorum operations across cache nodes.
 
 ---
 
-## Consistency Model
+# Design
 
-PocketKV uses **eventual consistency** with quorum replication.
+## Data Partitioning
 
-### Write
+PocketKV distributes keys using **consistent hashing**.
 
-* Router assigns a version to every write.
-* Data is replicated to multiple nodes in parallel.
-* Request succeeds after the configured write quorum is reached.
+Instead of assigning keys by modulo (`hash(key) % N`), keys are mapped onto a hash ring. Each physical node owns multiple virtual nodes to achieve a more balanced distribution.
 
-### Read
+Benefits:
 
-* Router queries replicas concurrently.
-* Waits for the configured read quorum.
-* Returns the latest version.
-* Repairs stale replicas asynchronously.
-
-### Delete
-
-Deletes are implemented using **tombstones** instead of immediate removal to prevent deleted values from reappearing due to stale replicas.
+* Minimal key movement when nodes join or leave
+* Better load balancing
+* Horizontal scalability
 
 ---
 
-## Technologies
+## Replication
 
-* Go
-* HTTP
-* Goroutines
-* Channels
-* Mutexes
-* Context
-* Heap (TTL expiration)
-* Consistent Hashing
+Each key is replicated across multiple nodes.
 
----
+For every request:
 
-## Running
+1. Router hashes the key.
+2. Finds the primary replica.
+3. Chooses the next replicas clockwise on the ring.
+4. Sends requests concurrently to all replicas.
 
-Start three cache nodes:
+Example:
 
-```bash
-go run ./cmd/node
 ```
+Replication Factor = 3
 
-Configure each node using environment variables:
-
-```text
-NODE_ID=node1
-NODE_ADDRESS=:8081
-```
-
-Start the router:
-
-```bash
-go run ./cmd/router
-```
-
-Router configuration:
-
-```text
-ROUTER_PORT=8080
-NODES=localhost:8081,localhost:8082,localhost:8083
+Key
+ │
+ ▼
+Node1
+ │
+ ▼
+Node2
+ │
+ ▼
+Node3
 ```
 
 ---
 
-## Example
+## Quorum-Based Consistency
 
-Store a value
+PocketKV implements quorum reads and writes.
 
-```bash
-curl -X POST localhost:8080/cache \
--H "Content-Type: application/json" \
--d '{"key":"name","value":"PocketKV","ttl":60}'
+Typical configuration:
+
+```
+Replication Factor (N) = 3
+
+Write Quorum (W) = 2
+
+Read Quorum (R) = 2
 ```
 
-Read a value
+Since
 
-```bash
-curl localhost:8080/cache?key=name
+```
+R + W > N
 ```
 
-Delete a value
-
-```bash
-curl -X DELETE localhost:8080/cache?key=name
-```
+at least one replica participating in every read contains the latest committed version.
 
 ---
 
-## Project Structure
+## Versioning
+
+Every write receives a monotonically increasing timestamp-based version.
+
+```
+Version = time.Now().UnixNano()
+```
+
+Replicas compare versions to determine the newest value.
+
+Older writes are ignored.
+
+---
+
+## Deletes using Tombstones
+
+Deletes are implemented as tombstones instead of immediately removing data.
+
+Example:
+
+```
+{
+    "version": 105,
+    "deleted": true
+}
+```
+
+This prevents deleted values from reappearing when stale replicas respond later.
+
+---
+
+## Read Repair
+
+If a read observes stale replicas,
+
+```
+Replica A  Version 10
+Replica B  Version 12
+Replica C  Version 12
+```
+
+the router returns Version 12 to the client and asynchronously repairs Replica A in the background.
+
+This gradually restores replica consistency without blocking reads.
+
+---
+
+## TTL Expiration
+
+Each cache entry stores an expiration timestamp.
+
+Expired entries are:
+
+* removed lazily during reads
+* periodically cleaned using a background worker
+
+The expiration queue is maintained using a min-heap for efficient cleanup.
+
+---
+
+## Concurrency
+
+Each node supports concurrent operations safely using:
+
+* goroutines
+* mutexes
+* contexts
+* background cleanup workers
+
+The router performs replica requests concurrently and returns as soon as quorum is achieved.
+
+---
+
+# Performance
+
+Benchmarked locally using **Docker Compose** and **hey**.
+
+| Operation | Concurrency |  Throughput | Average Latency |
+| --------- | ----------: | ----------: | --------------: |
+| GET       |         100 | ~1578 req/s |          ~61 ms |
+| GET       |         200 | ~1656 req/s |         ~117 ms |
+| GET       |         500 | ~1778 req/s |         ~272 ms |
+| POST      |          50 | ~1337 req/s |          ~36 ms |
+
+A shared `http.Client` with a tuned connection pool significantly improved throughput under concurrent load and eliminated request failures observed during initial benchmarking.
+
+---
+
+# Project Structure
 
 ```
 PocketKV/
-├── cmd/
-│   ├── node/
-│   └── router/
-├── cache/
-├── cluster/
+
+cmd/
 ├── node/
-├── router/
-├── hashing/
-└── README.md
+└── router/
+
+cache/
+cluster/
+node/
+router/
+
+Dockerfile
+docker-compose.yml
 ```
 
 ---
 
-## Future Improvements
+# Running Locally
 
-* Docker Compose deployment
-* Load testing and benchmarking
-* Hinted handoff
-* Merkle-tree based anti-entropy
-* Vector clocks for multi-writer conflict resolution
-* Gossip-based membership
-* Persistent storage (WAL + snapshots)
-* Metrics with Prometheus and Grafana
-* gRPC communication between nodes
+Clone the repository
+
+```bash
+git clone https://github.com/rohanb202/PocketKV.git
+
+cd PocketKV
+```
+
+Build
+
+```bash
+go build -o node ./cmd/node
+
+go build -o router ./cmd/router
+```
+
+Run
+
+```bash
+./node
+```
+
+and
+
+```bash
+./router
+```
 
 ---
 
-## Inspiration
+# Running with Docker
 
-PocketKV is inspired by the design principles behind distributed databases and caches such as Amazon Dynamo, Apache Cassandra, and Redis Cluster. It is intended as a learning project focused on distributed systems concepts rather than a production-ready datastore.
+Build the image
+
+```bash
+docker build -t pocketkv .
+```
+
+Start the cluster
+
+```bash
+docker compose up -d
+```
+
+Verify
+
+```bash
+docker compose ps
+```
+
+---
+
+# API
+
+## PUT / POST Value
+
+```http
+POST /cache
+```
+
+```json
+{
+    "key":"user1",
+    "value":"rohan",
+    "ttl":600
+}
+```
+
+---
+
+## Read Value
+
+```http
+GET /cache?key=user1
+```
+
+Response
+
+```json
+{
+    "value":"rohan",
+    "version":17524234123123
+}
+```
+
+---
+
+## Delete Value
+
+```http
+DELETE /cache?key=user1
+```
+
+Returns
+
+```
+204 No Content
+```
+
+---
+
+# Technologies
+
+* Go
+* HTTP
+* Docker
+* Docker Compose
+* Consistent Hashing
+* Goroutines
+* Mutexes
+* Context
+* Min Heap
+
+---
+
+# Future Improvements
+
+* Hinted handoff
+* Anti-entropy synchronization
+* Dynamic node membership
+* Automatic data rebalancing
+* Persistent storage backend
+* Prometheus metrics
+* gRPC transport
+
+---
+
+# Learning Outcomes
+
+This project was built to gain a practical understanding of distributed systems concepts, including:
+
+* Consistent hashing
+* Replication strategies
+* Quorum-based consistency
+* Eventual consistency
+* Tombstones
+* Read repair
+* Concurrent programming in Go
+* Docker-based distributed deployments
+
+---
+
+## License
+
+MIT
