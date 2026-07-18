@@ -1,36 +1,80 @@
-version: "3.9"
-
 services:
   node1:
-    image: pocketkv
+    image: pocketkv:latest
     command: ./node
+    restart: unless-stopped
+    init: true
+    container_name: node1
+    networks:
+     - pocketkv
     environment:
       NODE_ID: node1
       NODE_ADDRESS: ":8081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
 
   node2:
-    image: pocketkv
+    image: pocketkv:latest
     command: ./node
+    restart: unless-stopped
+    init: true
+    container_name: node2
+    networks:
+     - pocketkv
     environment:
       NODE_ID: node2
       NODE_ADDRESS: ":8082"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
 
   node3:
-    image: pocketkv
+    image: pocketkv:latest
     command: ./node
+    restart: unless-stopped
+    init: true
+    container_name: node3
+    networks:
+     - pocketkv
     environment:
       NODE_ID: node3
       NODE_ADDRESS: ":8083"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
 
   router:
-    image: pocketkv
+    image: pocketkv:latest
     command: ./router
+    restart: unless-stopped
+    container_name: router
+    init: true
+    networks:
+     - pocketkv
     depends_on:
-      - node1
-      - node2
-      - node3
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       ROUTER_PORT: "8080"
       NODES: node1:8081,node2:8082,node3:8083
+  
+networks:
+  pocketkv:
+    driver: bridge
+  

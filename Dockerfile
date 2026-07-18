@@ -17,6 +17,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o node ./cmd/node
 
 FROM alpine:latest
 
+RUN apk add --no-cache wget
+
 WORKDIR /app
 
 COPY --from=builder /app/router .

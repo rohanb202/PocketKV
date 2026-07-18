@@ -8,6 +8,17 @@ import (
 	"dist-cache/node"
 )
 
+
+var httpClient = &http.Client{
+    Timeout: 2 * time.Second,
+    Transport: &http.Transport{
+        MaxIdleConns:        100,
+        MaxIdleConnsPerHost: 100,
+        MaxConnsPerHost:     100,
+        IdleConnTimeout:     90 * time.Second,
+    },
+}
+
 func sendToNode(
     ctx context.Context,
 	n *node.Node,
@@ -23,7 +34,7 @@ func sendToNode(
 		ctx,
 		method,
 		url,
-		bytes.NewBuffer(body),
+		bytes.NewReader(body),
 	)
 
 	if err != nil {
@@ -37,10 +48,5 @@ func sendToNode(
 	)
 
 
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-	}
-
-
-	return client.Do(req)
+	return httpClient.Do(req)
 }

@@ -114,27 +114,23 @@ func (c *Cache) Set(key, value string, ttl time.Duration, version int64) {
 }
 
 func (c *Cache) Get(key string) (Item, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
 	item, ok := c.data[key]
 	if !ok {
 		return Item{}, false
 	}
 
-	if !item.Deleted && item.Expiry.Before(time.Now()) {
+	if item.Deleted {
+		return item, true
+	}
 
-		if expiryItem, ok := c.expiryMap[key]; ok {
-			heap.Remove(c.expiryHeap, expiryItem.index)
-			delete(c.expiryMap, key)
-		}
-
-		delete(c.data, key)
-
+	if item.Expiry.Before(time.Now()) {
 		return Item{}, false
 	}
 
-	return item, true 
+	return item, true
 }
 
 func (c *Cache) Delete(
